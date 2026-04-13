@@ -1,0 +1,29 @@
+@import "tailwindcss";
+
+* {
+  -webkit-tap-highlight-color: transparent;
+}
+
+html,
+body {
+  height: 100%;
+  overflow: hidden;
+  background: #000;
+}
+
+/* Safe area padding for notch iPhones */
+.pb-safe {
+  padding-bottom: env(safe-area-inset-bottom, 20px);
+}
+
+/* Leaflet overrides for dark theme */
+.leaflet-control-zoom a {
+  background: rgba(24, 24, 27, 0.9) !important;
+  color: #fff !important;
+  border-color: rgba(63, 63, 70, 0.5) !important;
+  backdrop-filter: blur(8px);
+}
+
+.leaflet-control-attribution {
+  display: none !important;
+}
