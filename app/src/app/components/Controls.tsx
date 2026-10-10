@@ -1,8 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 const BRIDGE_URL = process.env.NEXT_PUBLIC_BRIDGE_URL || "http://localhost:3001";
+const BRIDGE_TOKEN = process.env.NEXT_PUBLIC_BRIDGE_TOKEN || "";
+const DEFAULT_CENTER = { lat: -25.429, lon: -49.271 };
+
+interface Suggestion {
+  name: string;
+  address: string;
+  lat: number;
+  lon: number;
+}
 
 interface ControlsProps {
   selectedLocation: { lat: number; lon: number } | null;
@@ -54,6 +63,7 @@ export default function Controls({
   const [searchQuery, setSearchQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
 
   async function handleSpoof() {
     if (!selectedLocation) return;
@@ -64,7 +74,7 @@ export default function Controls({
     try {
       const res = await fetch(`${BRIDGE_URL}/set-location`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", "x-bridge-token": BRIDGE_TOKEN },
         body: JSON.stringify({ lat: selectedLocation.lat, lon: selectedLocation.lon }),
       });
       const data = await res.json();
@@ -92,7 +102,10 @@ export default function Controls({
     setErrorMsg("");
 
     try {
-      const res = await fetch(`${BRIDGE_URL}/clear-location`, { method: "POST" });
+      const res = await fetch(`${BRIDGE_URL}/clear-location`, {
+        method: "POST",
+        headers: { "x-bridge-token": BRIDGE_TOKEN },
+      });
       const data = await res.json();
       if (data.success) {
         setStatus("success");
@@ -110,27 +123,49 @@ export default function Controls({
     }
   }
 
-  async function handleSearch() {
-    if (!searchQuery.trim()) return;
-    setSearching(true);
-
-    try {
-      const res = await fetch(
-        `https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(searchQuery)}&limit=1`,
-        { headers: { "User-Agent": "LocationSpoofer/1.0" } }
-      );
-      const results = await res.json();
-      if (results.length > 0) {
-        const { lat, lon } = results[0];
-        onSearch(parseFloat(lat), parseFloat(lon));
-        setSearchQuery("");
-      }
-    } catch {
-      setStatus("error");
-      setErrorMsg("Erro ao buscar endereço");
-    } finally {
-      setSearching(false);
+  useEffect(() => {
+    if (searchQuery.trim().length < 3) {
+      setSuggestions([]);
+      return;
     }
+    let cancelled = false;
+    const t = setTimeout(async () => {
+      setSearching(true);
+      try {
+        const bias = selectedLocation
+          ? `&lat=${selectedLocation.lat}&lon=${selectedLocation.lon}`
+          : `&lat=${DEFAULT_CENTER.lat}&lon=${DEFAULT_CENTER.lon}`;
+        const res = await fetch(`/api/geocode?q=${encodeURIComponent(searchQuery)}${bias}`);
+        const { results, error } = await res.json();
+        if (cancelled) return;
+        if (error) throw new Error(error);
+        setSuggestions(results);
+        if (results.length > 0) setShowHistory(false);
+      } catch (err: unknown) {
+        if (cancelled) return;
+        setStatus("error");
+        setErrorMsg(err instanceof Error ? err.message : "Erro ao buscar endereço");
+      } finally {
+        if (!cancelled) setSearching(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+    // selectedLocation fora das deps: mover o pin não deve refazer a busca
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchQuery]);
+
+  function pickSuggestion(s: Suggestion) {
+    onSearch(s.lat, s.lon);
+    addToHistory(s.lat, s.lon, s.name);
+    setSearchQuery("");
+    setSuggestions([]);
+  }
+
+  function handleSearch() {
+    if (suggestions.length > 0) pickSuggestion(suggestions[0]);
   }
 
   const history = getHistory();
@@ -155,12 +190,31 @@ export default function Controls({
           {searching ? "..." : "Ir"}
         </button>
         <button
-          onClick={() => setShowHistory(!showHistory)}
+          onClick={() => {
+            setShowHistory(!showHistory);
+            setSuggestions([]);
+          }}
           className="px-4 py-3 rounded-xl bg-zinc-800/90 backdrop-blur-md text-white border border-zinc-700/50 active:bg-zinc-700 text-sm"
         >
           {showHistory ? "X" : String.fromCodePoint(0x1f553)}
         </button>
       </div>
+
+      {/* Suggestions dropdown */}
+      {suggestions.length > 0 && (
+        <div className="bg-zinc-900/95 backdrop-blur-md rounded-xl border border-zinc-700/50 overflow-hidden">
+          {suggestions.map((s, i) => (
+            <button
+              key={i}
+              onClick={() => pickSuggestion(s)}
+              className="w-full px-4 py-3 text-left text-sm text-zinc-300 border-b border-zinc-800 last:border-0 active:bg-zinc-800"
+            >
+              <div className="text-white">{s.name}</div>
+              <div className="text-xs text-zinc-500">{s.address}</div>
+            </button>
+          ))}
+        </div>
+      )}
 
       {/* History dropdown */}
       {showHistory && history.length > 0 && (

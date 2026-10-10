@@ -1,6 +1,20 @@
 const express = require("express");
 const cors = require("cors");
-const { exec } = require("child_process");
+const { exec, spawn } = require("child_process");
+const fs = require("fs");
+const path = require("path");
+
+// Log em arquivo além do console: server/logs/bridge.log
+const LOG_DIR = path.join(__dirname, "logs");
+fs.mkdirSync(LOG_DIR, { recursive: true });
+const logStream = fs.createWriteStream(path.join(LOG_DIR, "bridge.log"), { flags: "a" });
+for (const level of ["log", "error"]) {
+  const orig = console[level].bind(console);
+  console[level] = (...args) => {
+    orig(...args);
+    logStream.write(`${new Date().toISOString()} [${level}] ${args.join(" ")}\n`);
+  };
+}
 
 const app = express();
 const PORT = 3001;
@@ -20,7 +34,47 @@ let rsdPort = process.env.RSD_PORT || null;
 app.use(cors());
 app.use(express.json());
 
+// Bridge escuta em 0.0.0.0: sem token, qualquer um na rede muda a localização.
+const TOKEN = process.env.BRIDGE_TOKEN;
+app.use((req, res, next) => {
+  if (!TOKEN || req.get("x-bridge-token") === TOKEN) return next();
+  console.error(`[AUTH] 401 ${req.method} ${req.path} de ${req.ip}`);
+  res.status(401).json({ error: "token inválido" });
+});
+
 let lastSpoof = null;
+
+// O `simulate-location set` precisa continuar rodando: ao sair, o iPhone volta à localização real.
+let holder = null;
+function killHolder() {
+  if (holder) {
+    holder.kill();
+    holder = null;
+  }
+}
+
+// Sucesso = processo ainda vivo após STARTUP_MS; saiu antes = erro com stderr.
+const STARTUP_MS = 4000;
+function holdLocation(lat, lon) {
+  killHolder();
+  const args = ["developer", "dvt", "simulate-location", "set", "--rsd", rsdHost, rsdPort, "--", String(lat), String(lon)];
+  console.log(`[HOLD] pymobiledevice3 ${args.join(" ")}`);
+  return new Promise((resolve, reject) => {
+    const child = spawn("pymobiledevice3", args);
+    let stderr = "";
+    child.stderr.on("data", (d) => (stderr += d));
+    const timer = setTimeout(() => {
+      holder = child;
+      resolve();
+    }, STARTUP_MS);
+    child.on("exit", (code) => {
+      clearTimeout(timer);
+      if (holder === child) holder = null;
+      console.log(`[HOLD] exit code=${code} stderr=${stderr.trim() || "(vazio)"}`);
+      reject({ message: `simulate-location saiu com código ${code}`, stderr });
+    });
+  });
+}
 
 function runCommand(cmd) {
   return new Promise((resolve, reject) => {
@@ -77,10 +131,16 @@ app.post("/set-location", async (req, res) => {
   }
 
   try {
-    const cmd = getSetCommand(lat, lon);
-    const output = await runCommand(cmd);
+    let cmd, output = "";
+    if (MODE === "device") {
+      await holdLocation(lat, lon);
+      cmd = "simulate-location set (processo mantido)";
+    } else {
+      cmd = getSetCommand(lat, lon);
+      output = (await runCommand(cmd)).trim();
+    }
     lastSpoof = { lat, lon, time: new Date().toISOString(), cmd };
-    res.json({ success: true, lat, lon, mode: MODE, cmd, output: output.trim() });
+    res.json({ success: true, lat, lon, mode: MODE, cmd, output });
   } catch (err) {
     res.status(500).json({
       success: false,
@@ -97,6 +157,7 @@ app.post("/clear-location", async (_req, res) => {
   }
 
   try {
+    killHolder();
     const output = await runCommand(getClearCommand());
     res.json({ success: true, mode: MODE, output: output.trim() });
   } catch (err) {
@@ -154,6 +215,7 @@ app.listen(PORT, "0.0.0.0", () => {
       console.log(`⚠ RSD não configurado! Reinicie com: RSD_HOST=<host> RSD_PORT=<porta> npm start`);
     }
   }
+  if (!TOKEN) console.log(`⚠ BRIDGE_TOKEN não definido: bridge aberto a toda a rede`);
   console.log(`Rodando em http://0.0.0.0:${PORT}`);
   console.log(`Endpoints:`);
   console.log(`  POST /set-location   { lat, lon }`);
