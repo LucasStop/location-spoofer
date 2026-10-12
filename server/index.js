@@ -25,11 +25,10 @@ const MODE = process.env.MODE || "device";
 const SIM_UDID =
   process.env.SIM_UDID || "A019A98F-0878-453A-90D4-7D4185AD9C9E";
 
-// RSD tunnel info (iOS 17+)
-// Obter com: sudo pymobiledevice3 remote start-tunnel
-// Iniciar server com: RSD_HOST=<host> RSD_PORT=<porta> npm start
-let rsdHost = process.env.RSD_HOST || null;
-let rsdPort = process.env.RSD_PORT || null;
+// iOS 17+: o tunneld (sudo pymobiledevice3 remote tunneld) mantém o túnel e o endereço RSD muda sem afetar o bridge.
+const UDID = process.env.DEVICE_UDID || "00008140-001850201430401C";
+const TUNNELD = "http://127.0.0.1:49151";
+const TUNNEL_ARG = `--tunnel ${UDID}`;
 
 app.use(cors());
 app.use(express.json());
@@ -55,9 +54,23 @@ function killHolder() {
 
 // Sucesso = processo ainda vivo após STARTUP_MS; saiu antes = erro com stderr.
 const STARTUP_MS = 4000;
-function holdLocation(lat, lon) {
+// Sem o device no tunneld o pymobiledevice3 fica minutos tentando conectar, e o processo "vivo" passaria por sucesso.
+async function tunnelUp() {
+  try {
+    const r = await fetch(TUNNELD, { signal: AbortSignal.timeout(3000) });
+    return UDID in (await r.json());
+  } catch {
+    return false;
+  }
+}
+
+async function holdLocation(lat, lon) {
+  if (!(await tunnelUp())) {
+    console.error(`[HOLD] ${UDID} ausente no tunneld (${TUNNELD})`);
+    throw { message: `iPhone ausente no tunneld. Rode: sudo pymobiledevice3 remote tunneld` };
+  }
   killHolder();
-  const args = ["developer", "dvt", "simulate-location", "set", "--rsd", rsdHost, rsdPort, "--", String(lat), String(lon)];
+  const args = ["developer", "dvt", "simulate-location", "set", "--tunnel", UDID, "--", String(lat), String(lon)];
   console.log(`[HOLD] pymobiledevice3 ${args.join(" ")}`);
   return new Promise((resolve, reject) => {
     const child = spawn("pymobiledevice3", args);
@@ -95,14 +108,14 @@ function getSetCommand(lat, lon) {
   if (MODE === "simulator") {
     return `xcrun simctl location ${SIM_UDID} set ${lat},${lon}`;
   }
-  return `pymobiledevice3 developer dvt simulate-location set --rsd ${rsdHost} ${rsdPort} -- ${lat} ${lon}`;
+  return `pymobiledevice3 developer dvt simulate-location set ${TUNNEL_ARG} -- ${lat} ${lon}`;
 }
 
 function getClearCommand() {
   if (MODE === "simulator") {
     return `xcrun simctl location ${SIM_UDID} clear`;
   }
-  return `pymobiledevice3 developer dvt simulate-location clear --rsd ${rsdHost} ${rsdPort}`;
+  return `pymobiledevice3 developer dvt simulate-location clear ${TUNNEL_ARG}`;
 }
 
 function getStatusCommand() {
@@ -122,12 +135,6 @@ app.post("/set-location", async (req, res) => {
 
   if (lat < -90 || lat > 90 || lon < -180 || lon > 180) {
     return res.status(400).json({ error: "Coordenadas fora do range válido" });
-  }
-
-  if (MODE === "device" && (!rsdHost || !rsdPort)) {
-    return res.status(500).json({
-      error: "RSD não configurado. Inicie com: RSD_HOST=<host> RSD_PORT=<porta> npm start",
-    });
   }
 
   try {
@@ -152,10 +159,6 @@ app.post("/set-location", async (req, res) => {
 
 // Limpar localização simulada
 app.post("/clear-location", async (_req, res) => {
-  if (MODE === "device" && (!rsdHost || !rsdPort)) {
-    return res.status(500).json({ error: "RSD não configurado" });
-  }
-
   try {
     killHolder();
     const output = await runCommand(getClearCommand());
@@ -183,44 +186,25 @@ app.get("/status", async (_req, res) => {
   }
 });
 
-// Atualizar RSD sem reiniciar o server
-app.post("/set-rsd", (req, res) => {
-  const { host, port } = req.body;
-  if (!host || !port) {
-    return res.status(400).json({ error: "host e port são obrigatórios" });
-  }
-  rsdHost = host;
-  rsdPort = String(port);
-  console.log(`[RSD] Atualizado para ${rsdHost}:${rsdPort}`);
-  res.json({ success: true, host: rsdHost, port: rsdPort });
-});
-
 // Conferir último spoof aplicado
 app.get("/last-spoof", (_req, res) => {
   res.json({ lastSpoof, mode: MODE });
 });
 
 app.get("/", (_req, res) => {
-  res.json({ status: "Bridge server rodando", mode: MODE, port: PORT, rsdHost, rsdPort });
+  res.json({ status: "Bridge server rodando", mode: MODE, port: PORT, udid: UDID });
 });
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`\n=== Location Spoofer Bridge ===`);
   console.log(`Modo: ${MODE.toUpperCase()}`);
   if (MODE === "simulator") console.log(`Simulator UDID: ${SIM_UDID}`);
-  if (MODE === "device") {
-    if (rsdHost && rsdPort) {
-      console.log(`RSD: ${rsdHost}:${rsdPort}`);
-    } else {
-      console.log(`⚠ RSD não configurado! Reinicie com: RSD_HOST=<host> RSD_PORT=<porta> npm start`);
-    }
-  }
+  if (MODE === "device") console.log(`Device: ${UDID} via tunneld`);
   if (!TOKEN) console.log(`⚠ BRIDGE_TOKEN não definido: bridge aberto a toda a rede`);
   console.log(`Rodando em http://0.0.0.0:${PORT}`);
   console.log(`Endpoints:`);
   console.log(`  POST /set-location   { lat, lon }`);
   console.log(`  POST /clear-location`);
-  console.log(`  POST /set-rsd        { host, port }`);
   console.log(`  GET  /status`);
   console.log(`  GET  /last-spoof\n`);
 });
