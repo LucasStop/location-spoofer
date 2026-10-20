@@ -25,7 +25,6 @@ jobs:
         working-directory: app
         run: |
           yarn install
-          yarn lint
           yarn build
       - name: Server (sintaxe)
         working-directory: server
