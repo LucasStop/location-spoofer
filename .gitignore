@@ -9,3 +9,7 @@ next-env.d.ts
 npm-debug.log*
 
 logs/
+
+# sem lockfile no git (regra global: yarn e npm geram o seu, os dois ficam fora)
+yarn.lock
+package-lock.json
