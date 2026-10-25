@@ -1,0 +1,7 @@
+scripts:
+  setup: |
+    # .env.local é gitignored: copia do checkout principal em vez de commitar
+    for d in app server; do
+      if [ -f "$ORCA_ROOT_PATH/$d/.env.local" ] && [ ! -e "$d/.env.local" ]; then cp "$ORCA_ROOT_PATH/$d/.env.local" "$d/.env.local"; fi
+      (cd $d && yarn install)
+    done
