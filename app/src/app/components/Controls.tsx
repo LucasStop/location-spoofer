@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 
-const BRIDGE_URL = process.env.NEXT_PUBLIC_BRIDGE_URL || "http://localhost:3001";
+const BRIDGE_URL = process.env.NEXT_PUBLIC_BRIDGE_URL || "http://localhost:3011";
 const BRIDGE_TOKEN = process.env.NEXT_PUBLIC_BRIDGE_TOKEN || "";
 const DEFAULT_CENTER = { lat: -25.429, lon: -49.271 };
 
