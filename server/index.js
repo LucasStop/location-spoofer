@@ -17,7 +17,7 @@ for (const level of ["log", "error"]) {
 }
 
 const app = express();
-const PORT = 3001;
+const PORT = process.env.PORT || 3011;
 
 // Modos: "simulator" ou "device"
 const MODE = process.env.MODE || "device";

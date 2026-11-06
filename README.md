@@ -7,7 +7,7 @@ Ferramenta para simular localização GPS em dispositivos iOS (simulador ou iPho
 ```
 ┌─────────────────────┐       ┌─────────────────────┐       ┌──────────────┐
 │  Frontend (Next.js) │──────>│ Bridge Server (Express)│────>│ iPhone / Sim │
-│  localhost:3000      │ HTTP  │ localhost:3001        │ USB  │              │
+│  localhost:3010      │ HTTP  │ localhost:3011        │ USB  │              │
 └─────────────────────┘       └─────────────────────┘       └──────────────┘
 ```
 
@@ -80,7 +80,7 @@ npm install
 npm run dev
 ```
 
-Acesse `http://localhost:3000` no navegador do **Mac** (não no iPhone).
+Acesse `http://localhost:3010` no navegador do **Mac** (não no iPhone).
 
 ### Modo Simulator (iOS Simulator)
 
@@ -111,27 +111,39 @@ npm run dev
 
 ```bash
 # Verificar se o server está rodando
-curl http://localhost:3001/
+curl http://localhost:3011/
 
 # Verificar status do dispositivo
-curl http://localhost:3001/status
+curl http://localhost:3011/status
 
 # Definir localização (exemplo: Torre Eiffel, Paris)
-curl -X POST http://localhost:3001/set-location \
+curl -X POST http://localhost:3011/set-location \
   -H "Content-Type: application/json" \
   -d '{"lat": 48.8584, "lon": 2.2945}'
 
 # Limpar localização simulada
-curl -X POST http://localhost:3001/clear-location
+curl -X POST http://localhost:3011/clear-location
 
 # Ver último spoof aplicado
-curl http://localhost:3001/last-spoof
+curl http://localhost:3011/last-spoof
 
 # Atualizar RSD sem reiniciar o server (se o tunnel mudou)
-curl -X POST http://localhost:3001/set-rsd \
+curl -X POST http://localhost:3011/set-rsd \
   -H "Content-Type: application/json" \
   -d '{"host": "<NOVO_HOST>", "port": "<NOVA_PORTA>"}'
 ```
+
+## Rodar em segundo plano (launchd + Vercel)
+
+Para usar o site da Vercel sem iniciar nada à mão, o Mac sobe três peças sozinho:
+
+1. **tunneld** (daemon de sistema): `sudo cp server/launchd/com.locationspoofer.tunneld.plist /Library/LaunchDaemons/` e `sudo launchctl bootstrap system /Library/LaunchDaemons/com.locationspoofer.tunneld.plist`.
+2. **bridge** (LaunchAgent): `sh server/launchd/install-bridge.sh`. O launchd não lê `~/Downloads`, então o script copia o bridge para `~/Library/Application Support/location-spoofer-bridge` e grava o token de `NEXT_PUBLIC_BRIDGE_TOKEN` (`app/.env.local`). Reexecute após mudar `server/index.js` ou o token.
+3. **Tailscale serve**: `tailscale serve --bg --https=443 http://localhost:3011`. Expõe o bridge só na tailnet (nunca `funnel`).
+
+Na Vercel, `NEXT_PUBLIC_BRIDGE_URL` aponta para a URL `*.ts.net` do serve e `NEXT_PUBLIC_BRIDGE_TOKEN` tem o mesmo token do bridge. O aparelho que abre o site precisa estar com o Tailscale ligado.
+
+`server/launchd/tunneld_tailscale.py` roda o tunneld com o IP do iPhone no Tailscale como host fixo (`TUNNELD_EXTRA_HOSTS`), para o túnel funcionar fora da LAN.
 
 ## Solução de Problemas
 
@@ -154,7 +166,7 @@ O tunnel RSD expirou ou foi reiniciado. Os endereços RSD mudam a cada nova cone
 2. Reinicie: `sudo pymobiledevice3 remote start-tunnel`
 3. Atualize o server com os novos valores:
    - Reiniciando: `RSD_HOST=<novo_host> RSD_PORT=<nova_porta> npm start`
-   - Ou via API: `curl -X POST http://localhost:3001/set-rsd -H "Content-Type: application/json" -d '{"host":"<novo_host>","port":"<nova_porta>"}'`
+   - Ou via API: `curl -X POST http://localhost:3011/set-rsd -H "Content-Type: application/json" -d '{"host":"<novo_host>","port":"<nova_porta>"}'`
 
 ### "DeveloperDiskImage already mounted"
 
@@ -170,7 +182,7 @@ Isso não é um erro — significa que o disk image já está montado. Pode pros
 
 O frontend não consegue se conectar ao bridge server. Verifique:
 - O server está rodando (`npm start` no diretório `server/`)
-- A URL em `app/.env.local` está como `NEXT_PUBLIC_BRIDGE_URL=http://localhost:3001`
+- A URL em `app/.env.local` está como `NEXT_PUBLIC_BRIDGE_URL=http://localhost:3011`
 - Ambos estão rodando na mesma máquina
 
 ### O tunnel RSD não inicia / TimeoutError
