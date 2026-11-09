@@ -18,7 +18,7 @@ Ferramenta para simular localização GPS em dispositivos iOS (simulador ou iPho
 ## Pré-requisitos
 
 - **macOS** com Xcode instalado (necessário para as ferramentas de linha de comando)
-- **Node.js** (v18+)
+- **Node.js** (v20.12+, o bridge usa `process.loadEnvFile`)
 - **Python 3** com `pymobiledevice3` (apenas para iPhone físico)
 - **iPhone com Modo Desenvolvedor ativado** (apenas para iPhone físico)
 
@@ -35,41 +35,43 @@ pip3 install pymobiledevice3
 3. O iPhone vai reiniciar
 4. Após reiniciar, confirme a ativação quando solicitado
 
+### Descobrindo o UDID do iPhone
+
+Cada iPhone tem o seu UDID, e o bridge precisa dele em `DEVICE_UDID` (`server/.env.local`). Com o iPhone conectado por USB, desbloqueado e pareado (toque em **Confiar**):
+
+```bash
+pymobiledevice3 usbmux list      # funciona em Linux, macOS e Windows: copie o campo "Identifier"
+```
+
+Alternativas:
+- **Linux**: `idevice_id -l` (pacote `libimobiledevice-utils`).
+- **macOS**: Finder > selecione o iPhone > clique na linha de informações (modelo/número de série) até aparecer o UDID, ou `system_profiler SPUSBDataType | grep -A8 iPhone`.
+- **Windows**: app Apple Devices ou iTunes, mesmo truque do Finder.
+
+O UDID identifica o aparelho, não é uma senha, mas fica só no `server/.env.local`, que o `.gitignore` já ignora.
+
 ## Como Usar
 
 ### Modo Device (iPhone físico via USB)
 
-Requer 3 terminais abertos simultaneamente:
+Requer 3 terminais abertos simultaneamente. O bridge lê o túnel do **tunneld**, então o endereço RSD pode mudar sem reiniciar nada.
 
-**Terminal 1 — Iniciar o tunnel RSD:**
-
-```bash
-sudo pymobiledevice3 remote start-tunnel
-```
-
-Anote o `RSD Address` e `RSD Port` que aparecem no output, por exemplo:
-```
-RSD Address: fdaf:1b17:6dc1::1
-RSD Port: 55190
-```
-
-**Terminal 2 — Montar Developer Disk Image e iniciar o server:**
+**Terminal 1 — tunneld (sudo):**
 
 ```bash
-# Montar o disk image (necessário uma vez por conexão)
-pymobiledevice3 mounter auto-mount --rsd <RSD_ADDRESS> <RSD_PORT>
+sudo pymobiledevice3 remote tunneld
+```
 
-# Iniciar o bridge server
+Verifique com `curl -s http://127.0.0.1:49151`: deve listar o UDID do iPhone.
+
+**Terminal 2 — bridge server:**
+
+```bash
+pymobiledevice3 usbmux list        # campo "Identifier" = UDID (veja "Descobrindo o UDID do iPhone")
+echo "DEVICE_UDID=<seu_udid>" > server/.env.local
 cd server
 npm install
-RSD_HOST=<RSD_ADDRESS> RSD_PORT=<RSD_PORT> npm start
-```
-
-Exemplo com os valores acima:
-```bash
-pymobiledevice3 mounter auto-mount --rsd fdaf:1b17:6dc1::1 55190
-cd server
-RSD_HOST=fdaf:1b17:6dc1::1 RSD_PORT=55190 npm start
+npm start
 ```
 
 **Terminal 3 — Iniciar o frontend:**
@@ -127,11 +129,93 @@ curl -X POST http://localhost:3011/clear-location
 # Ver último spoof aplicado
 curl http://localhost:3011/last-spoof
 
-# Atualizar RSD sem reiniciar o server (se o tunnel mudou)
-curl -X POST http://localhost:3011/set-rsd \
-  -H "Content-Type: application/json" \
-  -d '{"host": "<NOVO_HOST>", "port": "<NOVA_PORTA>"}'
 ```
+
+## Roteiro para Linux (Ubuntu/Debian, iPhone físico via USB)
+
+Testado em Ubuntu 24.04 com iPhone 16 Pro (iOS 27.2). O bridge lê o túnel do **tunneld** (mesmo fluxo do macOS acima).
+
+### 1. Dependências do sistema (uma vez)
+
+```bash
+sudo apt install -y python3-venv python3-pip libimobiledevice-utils usbmuxd
+python3 -m venv ~/.venvs/pmd3
+~/.venvs/pmd3/bin/pip install pymobiledevice3
+```
+
+Node.js v18+ também é necessário. O `pymobiledevice3` fica no venv, então o bridge precisa dele no `PATH` (passo 4).
+
+### 2. Preparar o iPhone (uma vez)
+
+1. Ative o **Modo Desenvolvedor** (Ajustes > Privacidade e Segurança) e deixe o iPhone reiniciar.
+2. Conecte o cabo USB, desbloqueie o iPhone e toque em **Confiar** (digite a senha).
+3. Confirme o pareamento: `idevicepair pair && idevicepair validate`. Se vier "user denied the trust dialog", reconecte o cabo ou use Ajustes > Geral > Transferir ou Redefinir > Redefinir Localização e Privacidade, e repita.
+4. Pegue o UDID (detalhes em [Descobrindo o UDID do iPhone](#descobrindo-o-udid-do-iphone)):
+   ```bash
+   ~/.venvs/pmd3/bin/pymobiledevice3 usbmux list      # campo "Identifier" = UDID
+   ```
+   O Developer Disk Image já vinha montado no iOS 27.2. Se o spoof falhar por isso, monte com `pymobiledevice3 mounter auto-mount --tunnel <UDID>` (comando não testado aqui).
+
+### 3. Subir o tunneld (precisa de sudo, deixe aberto)
+
+```bash
+sudo ~/.venvs/pmd3/bin/pymobiledevice3 remote tunneld
+```
+
+Verifique: `curl -s http://127.0.0.1:49151` deve listar o UDID do iPhone. Se vier `{}`, o aparelho está bloqueado ou desconectado.
+
+### 4. Subir bridge e frontend
+
+```bash
+# bridge: o UDID vem de server/.env.local (gitignored); sem ele o bridge não sobe
+echo "DEVICE_UDID=<SEU_UDID>" >> server/.env.local
+cd server && npm install
+PATH=$HOME/.venvs/pmd3/bin:$PATH npm start
+
+# frontend (outro terminal)
+cd app && npm install && npm run dev
+```
+
+Abra `http://localhost:3010`. Para produção use `npm run build && npx next start -p 3010`: o `next start` sozinho sobe na porta 3000 e exige build prévio.
+
+### 5. Testar sem o frontend
+
+```bash
+curl -X POST localhost:3011/set-location -H "Content-Type: application/json" -d '{"lat": -25.4515, "lon": -49.2538}'
+curl localhost:3011/last-spoof
+curl -X POST localhost:3011/clear-location     # volta ao GPS real
+```
+
+`success: true` só confirma que o comando foi aceito. Confira no Mapas do iPhone (toque no botão de localização). O `simulate-location set` precisa continuar vivo: se o bridge ou o tunneld cair, o iPhone volta à posição real.
+
+### 6. Espelhar a tela do iPhone (opcional)
+
+```bash
+sudo apt install -y uxplay gstreamer1.0-plugins-bad gstreamer1.0-plugins-good gstreamer1.0-libav gstreamer1.0-gl gstreamer1.0-x
+# se usar ufw, libere só a sua LAN (ajuste a faixa):
+sudo ufw allow from 192.168.18.0/24 to any port 7000:7100 proto tcp
+sudo ufw allow from 192.168.18.0/24 to any port 6000:7011 proto udp
+uxplay -n iPhone -nh -p
+```
+
+No iPhone (mesma rede Wi-Fi do PC): Central de Controle > Espelhar Tela > **iPhone**. O `-p` fixa as portas para o firewall.
+
+### Variáveis e arquivos
+
+| Item | Onde | Observação |
+|---|---|---|
+| `DEVICE_UDID` | `server/.env.local` | UDID do seu iPhone (obrigatório; também aceita variável de ambiente). Requer Node 20.12+ |
+| `BRIDGE_TOKEN` | `server/.env.local` | opcional, mas sem ele o bridge (0.0.0.0) aceita qualquer um na rede |
+| `NEXT_PUBLIC_BRIDGE_URL` / `NEXT_PUBLIC_BRIDGE_TOKEN` | `app/.env.local` | o arquivo vai em `app/`, não em `app/src/app/`; reinicie o `npm run dev` depois de editar |
+
+### Problemas comuns no Linux
+
+- **`pymobiledevice3: not found` no `/status`**: o bridge foi iniciado sem o venv no `PATH` (passo 4).
+- **Bridge sai com "DEVICE_UDID não definido"**: crie `server/.env.local` (passo 4).
+- **`[HOLD] <udid> ausente no tunneld`**: o tunneld não está rodando ou não enxerga o aparelho (passo 3).
+- **`remote start-tunnel` falha com "No tunnel services discovered"**: use o `tunneld` em vez de `start-tunnel`.
+- **UxPlay: "videoparsersbad not found"**: falta `gstreamer1.0-plugins-bad`; depois rode `rm -rf ~/.cache/gstreamer-1.0`.
+- **iPhone não vê o UxPlay / não conecta**: firewall bloqueando as portas do passo 6.
 
 ## Rodar em segundo plano (launchd + Vercel)
 
@@ -160,13 +244,7 @@ O Modo Desenvolvedor não está ativado no iPhone. Siga os passos em [Ativando o
 
 ### "Failed to start service" / "No route to host"
 
-O tunnel RSD expirou ou foi reiniciado. Os endereços RSD mudam a cada nova conexão:
-
-1. Pare o tunnel antigo (Ctrl+C)
-2. Reinicie: `sudo pymobiledevice3 remote start-tunnel`
-3. Atualize o server com os novos valores:
-   - Reiniciando: `RSD_HOST=<novo_host> RSD_PORT=<nova_porta> npm start`
-   - Ou via API: `curl -X POST http://localhost:3011/set-rsd -H "Content-Type: application/json" -d '{"host":"<novo_host>","port":"<nova_porta>"}'`
+O túnel caiu (cabo desconectado, iPhone bloqueado por muito tempo). Reinicie o `tunneld` (`sudo pymobiledevice3 remote tunneld`); o bridge reencontra o aparelho sozinho, sem reiniciar.
 
 ### "DeveloperDiskImage already mounted"
 
@@ -185,17 +263,16 @@ O frontend não consegue se conectar ao bridge server. Verifique:
 - A URL em `app/.env.local` está como `NEXT_PUBLIC_BRIDGE_URL=http://localhost:3011`
 - Ambos estão rodando na mesma máquina
 
-### O tunnel RSD não inicia / TimeoutError
+### O tunneld não inicia / TimeoutError
 
 - Desconecte e reconecte o cabo USB
 - No iPhone, se aparecer "Confiar neste computador?", toque em **Confiar**
-- Tente novamente: `sudo pymobiledevice3 remote start-tunnel`
+- Tente novamente: `sudo pymobiledevice3 remote tunneld`
 
 ## Limitações
 
 - **Requer um Mac conectado via USB** — não é possível spoofar sem um computador. O iOS não permite que apps modifiquem o GPS diretamente
-- **O endereço RSD muda** a cada reconexão do tunnel — é necessário atualizar no server
-- **O tunnel requer sudo** — pymobiledevice3 precisa de permissões de administrador para criar o tunnel
+- **O tunneld requer sudo** — pymobiledevice3 precisa de permissões de administrador para criar o tunnel
 
 ## Stack
 
