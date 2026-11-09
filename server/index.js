@@ -1,3 +1,6 @@
+// server/.env.local (gitignored) com DEVICE_UDID, BRIDGE_TOKEN etc.; variáveis do ambiente têm prioridade.
+try { process.loadEnvFile(require("path").join(__dirname, ".env.local")); } catch {}
+
 const express = require("express");
 const cors = require("cors");
 const { exec, spawn } = require("child_process");
@@ -26,7 +29,12 @@ const SIM_UDID =
   process.env.SIM_UDID || "A019A98F-0878-453A-90D4-7D4185AD9C9E";
 
 // iOS 17+: o tunneld (sudo pymobiledevice3 remote tunneld) mantém o túnel e o endereço RSD muda sem afetar o bridge.
-const UDID = process.env.DEVICE_UDID || "00008140-001850201430401C";
+// UDID do iPhone: `pymobiledevice3 usbmux list` (campo Identifier). Sem padrão, cada aparelho tem o seu.
+const UDID = process.env.DEVICE_UDID;
+if (MODE === "device" && !UDID) {
+  console.error("DEVICE_UDID não definido: coloque em server/.env.local (DEVICE_UDID=<udid>)");
+  process.exit(1);
+}
 const TUNNELD = "http://127.0.0.1:49151";
 const TUNNEL_ARG = `--tunnel ${UDID}`;
 
